@@ -8,6 +8,7 @@ type Orientation = 'horizontal' | 'vertical';
 type SetupWord = { id: string; length: number; value: string; placement?: Placement; };
 type Placement = { row: number; col: number; orientation: Orientation; cells: number[]; };
 type PublicWordState = { id: string; length: number; guessed: boolean; revealed: string[]; };
+type ChatMessage = { id: string; playerId: string; playerName: string; text: string; createdAt: number; };
 type RoomSummary = {
   code: string;
   status: 'waiting' | 'setup' | 'battle' | 'finished';
@@ -20,6 +21,7 @@ type RoomSummary = {
   yourWords: PublicWordState[];
   opponentWords: PublicWordState[];
   messages: Array<{ id: string; text: string; kind: 'info' | 'success' | 'error' }>;
+  chat: ChatMessage[];
 };
 type Auth = { roomCode: string; playerId: string; token: string };
 type Toast = { kind: 'success' | 'error' | 'info'; text: string };
@@ -77,55 +79,6 @@ async function api<T>(path: string, options?: RequestInit) {
   return data as T;
 }
 
-// Letter-box input — one box per letter, auto-advance
-function LetterInput({ length, value, onChange, disabled, autoFocus }: {
-  length: number; value: string; onChange: (v: string) => void; disabled?: boolean; autoFocus?: boolean;
-}) {
-  const refs = useRef<(HTMLInputElement | null)[]>([]);
-  const chars = Array.from({ length }, (_, i) => value[i] ?? '');
-
-  function handleKey(i: number, e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Backspace') {
-      e.preventDefault();
-      if (chars[i]) { onChange(chars.map((c, idx) => idx === i ? '' : c).join('')); }
-      else if (i > 0) { refs.current[i - 1]?.focus(); onChange(chars.map((c, idx) => idx === i - 1 ? '' : c).join('')); }
-    } else if (e.key === 'ArrowLeft' && i > 0) refs.current[i - 1]?.focus();
-    else if (e.key === 'ArrowRight' && i < length - 1) refs.current[i + 1]?.focus();
-  }
-
-  function handleChange(i: number, e: React.ChangeEvent<HTMLInputElement>) {
-    const raw = normalizeWord(e.target.value);
-    if (!raw) return;
-    const letter = raw[raw.length - 1];
-    onChange(chars.map((c, idx) => idx === i ? letter : c).join(''));
-    if (i < length - 1) setTimeout(() => refs.current[i + 1]?.focus(), 0);
-  }
-
-  function handlePaste(e: React.ClipboardEvent) {
-    e.preventDefault();
-    const pasted = normalizeWord(e.clipboardData.getData('text')).slice(0, length);
-    onChange(pasted);
-    setTimeout(() => refs.current[Math.min(pasted.length, length - 1)]?.focus(), 0);
-  }
-
-  return (
-    <div className="letter-row">
-      {Array.from({ length }, (_, i) => (
-        <input
-          key={i} ref={(el) => { refs.current[i] = el; }}
-          className={`lbox ${chars[i] ? 'lbox-filled' : ''}`}
-          value={chars[i]} maxLength={2}
-          onChange={(e) => handleChange(i, e)}
-          onKeyDown={(e) => handleKey(i, e)}
-          onPaste={handlePaste} onFocus={(e) => e.target.select()}
-          autoFocus={autoFocus && i === 0} disabled={disabled}
-          autoComplete="off" autoCorrect="off" spellCheck={false}
-        />
-      ))}
-    </div>
-  );
-}
-
 export default function App() {
   const [name, setName] = useState('');
   const [joinCode, setJoinCode] = useState('');
@@ -134,13 +87,16 @@ export default function App() {
   const [words, setWords] = useState<SetupWord[]>(initialWords);
   const [orientation, setOrientation] = useState<Orientation>('horizontal');
   const [activeWordId, setActiveWordId] = useState('W6');
+  const [setupInputFocused, setSetupInputFocused] = useState(false);
   const [hoverCells, setHoverCells] = useState<number[]>([]);
   const [hoverValid, setHoverValid] = useState(true);
   const [guessText, setGuessText] = useState('');
   const [guessTarget, setGuessTarget] = useState('W6');
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [tab, setTab] = useState<'defense' | 'attack' | 'feed'>('defense');
+  const [chatInput, setChatInput] = useState('');
+  const [seenChatCount, setSeenChatCount] = useState(0);
+  const [tab, setTab] = useState<'defense' | 'attack' | 'feed' | 'chat'>('defense');
 
   useEffect(() => {
     const s = localStorage.getItem('word-war-auth');
@@ -168,9 +124,29 @@ export default function App() {
   }, [auth]);
 
   useEffect(() => { if (!toast) return; const t = window.setTimeout(() => setToast(null), 2600); return () => window.clearTimeout(t); }, [toast]);
+  useEffect(() => { if (tab === 'chat') setSeenChatCount(room?.chat.length ?? 0); }, [tab, room?.chat.length]);
+  useEffect(() => {
+    const focusedWord = words.find((w) => w.id === activeWordId) ?? words[0];
+    if (!setupInputFocused || room?.status !== 'setup' || !focusedWord?.placement) return;
+    const t = window.setTimeout(() => setupInputRef.current?.focus(), 40);
+    return () => window.clearTimeout(t);
+  }, [setupInputFocused, activeWordId, room?.status, words]);
   useEffect(() => { if (room?.status === 'battle') setTab('attack'); }, [room?.status]);
 
+  const setupInputRef = useRef<HTMLInputElement | null>(null);
   const activeWord = words.find((w) => w.id === activeWordId) ?? words[0];
+  const selectedCells = activeWord?.placement?.cells ?? [];
+  const defenseLetters = useMemo(() => {
+    const map: Record<number, string> = {};
+    words.forEach((word) => {
+      if (!word.placement) return;
+      word.placement.cells.forEach((cell, index) => {
+        const letter = word.value[index];
+        if (letter) map[cell] = letter;
+      });
+    });
+    return map;
+  }, [words]);
   const placementDone = words.every((w) => w.placement && w.value.length === w.length);
   const canSubmitSetup = placementDone && auth && room && room.status !== 'battle';
   const inBattle = room?.status === 'battle' || room?.status === 'finished';
@@ -179,6 +155,7 @@ export default function App() {
   const yourPlayer = room?.players.find((p) => p.id === auth?.playerId) ?? null;
   const enemyPlayer = room?.players.find((p) => p.id !== auth?.playerId) ?? null;
   const opponentGuessable = room?.opponentWords.filter((w) => !w.guessed) ?? [];
+  const unreadChatCount = Math.max(0, (room?.chat.length ?? 0) - seenChatCount);
 
   function persistAuth(next: Auth | null) { setAuth(next); if (next) localStorage.setItem('word-war-auth', JSON.stringify(next)); else localStorage.removeItem('word-war-auth'); }
   function showToast(next: Toast) { setToast(next); }
@@ -199,20 +176,45 @@ export default function App() {
     finally { setBusy(false); }
   }
 
-  function updateWord(id: string, value: string) { setWords((cur) => cur.map((w) => w.id === id ? { ...w, value: normalizeWord(value).slice(0, w.length) } : w)); }
+  function updateWord(id: string, value: string) {
+    setWords((cur) => cur.map((w) => w.id === id ? { ...w, value: normalizeWord(value).slice(0, w.length) } : w));
+  }
+
+  function clearActiveWord() {
+    if (!activeWord) return;
+    setWords((cur) => cur.map((w) => w.id === activeWord.id ? { ...w, value: '', placement: undefined } : w));
+    setHoverCells([]);
+    setSetupInputFocused(false);
+  }
 
   function placeWord(row: number, col: number) {
-    if (!activeWord) return;
-    if (activeWord.value.length !== activeWord.length) { showToast({ kind: 'error', text: `Treba točno ${activeWord.length} slova.` }); return; }
+    if (!activeWord || room?.status !== 'setup') return;
     const result = canPlaceWord(activeWord, row, col, orientation, words);
     if (!result.valid) { showToast({ kind: 'error', text: 'Nije validno.' }); return; }
     setWords((cur) => cur.map((w) => w.id === activeWord.id ? { ...w, placement: { row, col, orientation, cells: result.cells } } : w));
-    const idx = words.findIndex((w) => w.id === activeWord.id);
-    const next = words.slice(idx + 1).find((w) => !w.placement) ?? words.find((w) => !w.placement && w.id !== activeWord.id);
-    if (next) setActiveWordId(next.id);
+    setHoverCells(result.cells);
+    setHoverValid(true);
+    setSetupInputFocused(true);
   }
 
   function onHover(index: number) { if (!activeWord) return; const { row, col } = fromIndex(index); const r = canPlaceWord(activeWord, row, col, orientation, words); setHoverCells(r.cells); setHoverValid(r.valid); }
+
+  function handleSetupInputChange(value: string) {
+    if (!activeWord) return;
+    updateWord(activeWord.id, value);
+    const normalized = normalizeWord(value).slice(0, activeWord.length);
+    if (normalized.length === activeWord.length) {
+      const idx = words.findIndex((w) => w.id === activeWord.id);
+      const next = words.slice(idx + 1).find((w) => !w.placement) ?? words.find((w) => !w.placement && w.id !== activeWord.id);
+      if (next) {
+        setActiveWordId(next.id);
+        setSetupInputFocused(false);
+        showToast({ kind: 'success', text: `Riječ od ${activeWord.length} slova spremljena.` });
+      } else {
+        showToast({ kind: 'success', text: 'Sve riječi su postavljene.' });
+      }
+    }
+  }
 
   async function submitSetup() {
     if (!canSubmitSetup || !auth) return;
@@ -238,6 +240,16 @@ export default function App() {
     finally { setBusy(false); }
   }
 
+  async function sendChat() {
+    if (!auth || !chatInput.trim()) return;
+    try {
+      await api(`/api/rooms/${auth.roomCode}/chat`, { method: 'POST', body: JSON.stringify({ playerId: auth.playerId, token: auth.token, text: chatInput.trim() }) });
+      setChatInput('');
+    } catch (e) {
+      showToast({ kind: 'error', text: e instanceof Error ? e.message : 'Chat greška.' });
+    }
+  }
+
   async function restartMatch() {
     if (!auth) return;
     setBusy(true);
@@ -246,7 +258,7 @@ export default function App() {
     finally { setBusy(false); }
   }
 
-  function leaveRoom() { persistAuth(null); setRoom(null); setWords(initialWords()); setGuessText(''); setJoinCode(''); setHoverCells([]); setHoverValid(true); setTab('defense'); }
+  function leaveRoom() { persistAuth(null); setRoom(null); setWords(initialWords()); setGuessText(''); setChatInput(''); setJoinCode(''); setHoverCells([]); setHoverValid(true); setTab('defense'); setSeenChatCount(0); }
 
   // ── LOBBY ──────────────────────────────────────────────────────────────────
   if (!auth || !room) return (
@@ -325,6 +337,10 @@ export default function App() {
         <button className={`gtab ${tab === 'feed' ? 'gtab-on' : ''}`} onClick={() => setTab('feed')}>
           <Crown size={14} /> Tijek
         </button>
+        <button className={`gtab ${tab === 'chat' ? 'gtab-on' : ''}`} onClick={() => setTab('chat')}>
+          <Send size={14} /> Chat
+          {unreadChatCount > 0 && <span className="chat-pill">{unreadChatCount}</span>}
+        </button>
       </nav>
 
       {/* ── DEFENSE ── */}
@@ -338,23 +354,63 @@ export default function App() {
                   ? `Postavi još ${4 - words.filter((w) => w.placement).length} ${4 - words.filter((w) => w.placement).length === 1 ? 'riječ' : 'riječi'}`
                   : '✓ Sve postavljeno'}
               </div>
-              <div className="wslots">
-                {words.map((word) => (
-                  <div key={word.id} className={`wslot ${activeWordId === word.id ? 'wslot-active' : ''} ${word.placement ? 'wslot-placed' : ''}`} onClick={() => setActiveWordId(word.id)}>
-                    <div className="wslot-head">
-                      <span>{word.length} slova</span>
-                      {word.placement ? <CheckCircle2 size={13} style={{ color: 'var(--green)' }} /> : <XCircle size={13} style={{ color: 'var(--muted)' }} />}
-                    </div>
-                    <LetterInput length={word.length} value={word.value} onChange={(v) => updateWord(word.id, v)} disabled={inBattle} autoFocus={activeWordId === word.id} />
-                  </div>
-                ))}
+
+              <div className="setup-card">
+                <div className="setup-label">Aktivna riječ</div>
+                <div className="wslots wslots-compact">
+                  {words.map((word) => (
+                    <button key={word.id} className={`wslot ${activeWordId === word.id ? 'wslot-active' : ''} ${word.placement ? 'wslot-placed' : ''}`} onClick={() => setActiveWordId(word.id)} disabled={inBattle}>
+                      <div className="wslot-head">
+                        <span>{word.length} slova</span>
+                        {word.placement ? <CheckCircle2 size={13} style={{ color: 'var(--green)' }} /> : <XCircle size={13} style={{ color: 'var(--muted)' }} />}
+                      </div>
+                      <div className="setup-preview">
+                        {Array.from({ length: word.length }, (_, i) => (
+                          <span key={i} className={`setup-chip ${word.value[i] ? 'setup-chip-filled' : ''}`}>{word.value[i] ?? '•'}</span>
+                        ))}
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="orient-row">
                 <button className={`obtn ${orientation === 'horizontal' ? 'obtn-on' : ''}`} onClick={() => setOrientation('horizontal')} disabled={inBattle}>↔ Horiz.</button>
                 <button className={`obtn ${orientation === 'vertical' ? 'obtn-on' : ''}`} onClick={() => setOrientation('vertical')} disabled={inBattle}>↕ Vert.</button>
               </div>
-              <p className="aside-hint">Klikni na grid da postaviš aktivnu riječ</p>
+
+              <div className="setup-card">
+                <div className="setup-label">Pisanje direktno na grid</div>
+                <p className="aside-hint">1. Odaberi riječ. 2. Dodirni početno polje. 3. Tipkaj. Smjer se pamti dok ga ne promijeniš.</p>
+                <div className="setup-live">
+                  <div className="setup-live-meta">
+                    <span>{activeWord.length} slova</span>
+                    <span>{activeWord.placement ? `${LETTERS[activeWord.placement.col]}${activeWord.placement.row + 1} · ${activeWord.placement.orientation === 'horizontal' ? 'vodoravno' : 'okomito'}` : 'odaberi polje'}</span>
+                  </div>
+                  <input
+                    ref={setupInputRef}
+                    className="big-input setup-type-input"
+                    placeholder={activeWord.placement ? `Upiši ${activeWord.length} slova…` : 'Prvo dotakni grid'}
+                    value={activeWord.value}
+                    onChange={(e) => handleSetupInputChange(e.target.value)}
+                    onFocus={() => setSetupInputFocused(true)}
+                    onBlur={() => setSetupInputFocused(false)}
+                    maxLength={activeWord.length}
+                    disabled={inBattle || !activeWord.placement}
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <div className="setup-preview setup-preview-live">
+                    {Array.from({ length: activeWord.length }, (_, i) => (
+                      <span key={i} className={`setup-chip ${activeWord.value[i] ? 'setup-chip-filled' : ''} ${selectedCells.includes(activeWord.placement?.cells?.[i] ?? -1) ? 'setup-chip-active' : ''}`}>{activeWord.value[i] ?? '•'}</span>
+                    ))}
+                  </div>
+                </div>
+                <button className="btn-secondary" style={{ width: '100%', marginTop: 8 }} onClick={clearActiveWord} disabled={inBattle || (!activeWord.value && !activeWord.placement)}>
+                  Očisti aktivnu riječ
+                </button>
+              </div>
 
               <button className="btn-primary" style={{ width: '100%', marginTop: 8 }} disabled={!canSubmitSetup || busy} onClick={submitSetup}>
                 {busy ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />} Zaključaj
@@ -370,6 +426,8 @@ export default function App() {
             <div className="grid-area">
               <Grid mode="defense" cells={room.yourDefenseGrid}
                 hoverCells={room.status === 'setup' ? hoverCells : []} hoverValid={hoverValid}
+                selectedCells={room.status === 'setup' ? selectedCells : []}
+                letters={defenseLetters}
                 onCellEnter={room.status === 'setup' ? onHover : undefined}
                 onCellLeave={() => setHoverCells([])}
                 onCellClick={room.status === 'setup' ? (i) => placeWord(fromIndex(i).row, fromIndex(i).col) : undefined}
@@ -415,7 +473,16 @@ export default function App() {
                     ))}
                   </select>
                   <div className="guess-row">
-                    <LetterInput length={opponentGuessable.find((w) => w.id === guessTarget)?.length ?? 4} value={guessText} onChange={setGuessText} disabled={!isYourTurn} />
+                    <input
+                      className="big-input"
+                      value={guessText}
+                      onChange={(e) => setGuessText(normalizeWord(e.target.value).slice(0, opponentGuessable.find((w) => w.id === guessTarget)?.length ?? 4))}
+                      disabled={!isYourTurn}
+                      placeholder="Upiši riječ…"
+                      autoCapitalize="characters"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
                     <button className="btn-primary" style={{ padding: '0 14px', flexShrink: 0 }} onClick={submitGuess} disabled={!guessText || !isYourTurn || busy}>
                       <Zap size={15} />
                     </button>
@@ -469,6 +536,70 @@ export default function App() {
         </div>
       )}
 
+      {tab === 'chat' && (
+        <div className="tcontent chat-shell">
+          <div className="chat-board">
+            <div className="chat-header-card">
+              <div>
+                <div className="aside-title">Soba chat</div>
+                <div className="chat-subtitle">Kratke poruke između igrača dok traje meč.</div>
+              </div>
+              <div className="chat-room-pill">#{auth.roomCode}</div>
+            </div>
+            <div className="chat-messages">
+              {room.chat.length > 0 ? room.chat.map((msg) => {
+                const mine = msg.playerId === auth.playerId;
+                return (
+                  <div key={msg.id} className={`chat-bubble ${mine ? 'chat-bubble-mine' : ''}`}>
+                    <div className="chat-bubble-head">
+                      <span>{mine ? 'Ti' : msg.playerName}</span>
+                      <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                    <div>{msg.text}</div>
+                  </div>
+                );
+              }) : <div className="fempty">Chat je prazan. Pošalji prvu poruku.</div>}
+            </div>
+            <div className="chat-compose">
+              <input
+                className="big-input"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value.slice(0, 180))}
+                onKeyDown={(e) => { if (e.key === 'Enter') sendChat(); }}
+                placeholder="Upiši poruku..."
+                maxLength={180}
+              />
+              <button className="btn-primary" onClick={sendChat} disabled={!chatInput.trim()}>
+                <Send size={15} /> Pošalji
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {room.status === 'finished' && (
+        <div className="victory-overlay">
+          <div className="victory-card">
+            <div className="victory-kicker">Runda završena</div>
+            <div className="victory-title">{room.winnerId === auth.playerId ? 'Pobijedio si' : 'Protivnik je pobijedio'}</div>
+            <div className="victory-scoreline">
+              <div className="victory-player">
+                <span>{yourPlayer?.name ?? 'Ti'}</span>
+                <strong>{yourPlayer?.score ?? 0}</strong>
+              </div>
+              <div className="victory-vs">VS</div>
+              <div className="victory-player">
+                <span>{enemyPlayer?.name ?? 'Protivnik'}</span>
+                <strong>{enemyPlayer?.score ?? 0}</strong>
+              </div>
+            </div>
+            <button className="btn-primary" onClick={restartMatch} disabled={busy}>
+              <RotateCw size={15} /> Nova runda
+            </button>
+          </div>
+        </div>
+      )}
+
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
     </div>
   );
@@ -480,12 +611,14 @@ type GridProps = {
   cells: Array<'empty' | 'occupied' | 'miss' | 'hit' | 'secured' | 'unknown'>;
   hoverCells?: number[];
   hoverValid?: boolean;
+  selectedCells?: number[];
+  letters?: Record<number, string>;
   onCellClick?: (index: number) => void;
   onCellEnter?: (index: number) => void;
   onCellLeave?: () => void;
 };
 
-function Grid({ mode, cells, hoverCells = [], hoverValid = true, onCellClick, onCellEnter, onCellLeave }: GridProps) {
+function Grid({ mode, cells, hoverCells = [], hoverValid = true, selectedCells = [], letters = {}, onCellClick, onCellEnter, onCellLeave }: GridProps) {
   return (
     <div className="grid-c">
       <div className="grid-top">
@@ -502,6 +635,7 @@ function Grid({ mode, cells, hoverCells = [], hoverValid = true, onCellClick, on
               const hov = hoverCells.includes(i);
               let cls = `gc gc-${cell}`;
               if (hov) cls += hoverValid ? ' gc-hov-ok' : ' gc-hov-no';
+              if (selectedCells.includes(i)) cls += ' gc-selected';
               return (
                 <button key={i} className={cls}
                   onClick={() => onCellClick?.(i)}
@@ -509,7 +643,7 @@ function Grid({ mode, cells, hoverCells = [], hoverValid = true, onCellClick, on
                   onMouseLeave={() => onCellLeave?.()}
                   disabled={!onCellClick} aria-label={`${mode}-${i}`}
                 >
-                  {cell === 'hit' || cell === 'secured' ? '✦' : cell === 'miss' ? '·' : cell === 'occupied' && mode === 'defense' ? '▪' : ''}
+                  {cell === 'hit' || cell === 'secured' ? '✦' : cell === 'miss' ? '·' : mode === 'defense' && letters[i] ? letters[i] : cell === 'occupied' && mode === 'defense' ? '▪' : ''}
                 </button>
               );
             })}

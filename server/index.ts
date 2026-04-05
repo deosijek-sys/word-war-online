@@ -57,6 +57,14 @@ type FeedMessage = {
   kind: 'info' | 'success' | 'error';
 };
 
+type ChatMessage = {
+  id: string;
+  playerId: string;
+  playerName: string;
+  text: string;
+  createdAt: number;
+};
+
 type Room = {
   code: string;
   players: Player[];
@@ -64,6 +72,7 @@ type Room = {
   turn: string | null;
   winnerId: string | null;
   messages: FeedMessage[];
+  chat: ChatMessage[];
 };
 
 const rooms = new Map<string, Room>();
@@ -238,6 +247,7 @@ app.post('/api/rooms', (req, res) => {
       turn: null,
       winnerId: null,
       messages: [],
+      chat: [],
     };
     pushMessage(room, `${name} je kreirao sobu.`, 'info');
     rooms.set(room.code, room);
@@ -307,6 +317,7 @@ app.get('/api/rooms/:code/state', (req, res) => {
         revealed: Array.from({ length: spec.length }, () => '_'),
       }))),
       messages: room.messages,
+      chat: room.chat,
     });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Ne mogu dohvatiti stanje sobe.' });
@@ -390,6 +401,28 @@ app.post('/api/rooms/:code/attack', (req, res) => {
     res.json({ message: 'Pogodak. I dalje si na potezu.' });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Napad nije uspio.' });
+  }
+});
+
+app.post('/api/rooms/:code/chat', (req, res) => {
+  try {
+    const room = getRoom(req.params.code);
+    const player = getPlayer(room, String(req.body?.playerId || ''), String(req.body?.token || ''));
+    const text = String(req.body?.text || '').replace(/\s+/g, ' ').trim();
+    if (!text) throw new Error('Poruka je prazna.');
+    if (text.length > 180) throw new Error('Poruka je predugačka.');
+
+    room.chat.push({
+      id: uid(),
+      playerId: player.id,
+      playerName: player.name,
+      text,
+      createdAt: Date.now(),
+    });
+    room.chat = room.chat.slice(-60);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Chat nije uspio.' });
   }
 });
 
