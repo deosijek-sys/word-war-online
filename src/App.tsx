@@ -202,19 +202,15 @@ export default function App() {
     setTimeout(() => setupInputRef.current?.focus(), 30);
   }
 
-  function handleSetupInput(value: string) {
+  function handleSetupInput(raw: string) {
     if (!activeWord) return;
-    updateWord(activeWord.id, value);
-    const normalized = normalizeWord(value).slice(0, activeWord.length);
+    const normalized = normalizeWord(raw).slice(0, activeWord.length);
+    setWords((cur) => cur.map((w) => w.id === activeWord.id ? { ...w, value: normalized } : w));
     if (normalized.length === activeWord.length && activeWord.placement) {
       const idx = words.findIndex((w) => w.id === activeWord.id);
       const next = words.slice(idx + 1).find((w) => !w.placement) ?? words.find((w) => !w.placement && w.id !== activeWord.id);
-      if (next) {
-        setActiveWordId(next.id);
-        showToast({ kind: 'success', text: `✓ ${activeWord.length} slova — klikni polje za sljedeću` });
-      } else {
-        showToast({ kind: 'success', text: 'Sve riječi postavljene!' });
-      }
+      if (next) { setActiveWordId(next.id); showToast({ kind: 'success', text: `✓ ${activeWord.length} slova` }); }
+      else { showToast({ kind: 'success', text: 'Sve postavljeno!' }); }
     }
   }
 
@@ -398,6 +394,7 @@ export default function App() {
                       className="word-input"
                       value={activeWord.value}
                       onChange={(e) => handleSetupInput(e.target.value)}
+                      onInput={(e) => handleSetupInput((e.target as HTMLInputElement).value)}
                       placeholder={`${activeWord.length} slova…`}
                       disabled={inBattle}
                       maxLength={activeWord.length}
@@ -405,6 +402,8 @@ export default function App() {
                       autoCorrect="off"
                       autoComplete="off"
                       spellCheck={false}
+                      type="text"
+                      inputMode="text"
                     />
                     <div className="letter-chips">
                       {Array.from({ length: activeWord.length }, (_, i) => (
