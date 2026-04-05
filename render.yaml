@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: word-war-online
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run server
+    autoDeploy: true
