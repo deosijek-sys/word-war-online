@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2, Copy, Crown, LoaderCircle, LogIn, PlusCircle,
-  RotateCw, Send, Shield, Swords, Target, Trophy, User, Zap, XCircle,
+  RotateCw, Send, Shield, Swords, Target, User, Zap, XCircle, MessageSquare,
 } from 'lucide-react';
 
 type Orientation = 'horizontal' | 'vertical';
@@ -87,7 +87,6 @@ export default function App() {
   const [words, setWords] = useState<SetupWord[]>(initialWords);
   const [orientation, setOrientation] = useState<Orientation>('horizontal');
   const [activeWordId, setActiveWordId] = useState('W6');
-  const [setupInputFocused, setSetupInputFocused] = useState(false);
   const [hoverCells, setHoverCells] = useState<number[]>([]);
   const [hoverValid, setHoverValid] = useState(true);
   const [guessText, setGuessText] = useState('');
@@ -96,7 +95,11 @@ export default function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [seenChatCount, setSeenChatCount] = useState(0);
-  const [tab, setTab] = useState<'defense' | 'attack' | 'feed' | 'chat'>('defense');
+  const [tab, setTab] = useState<'defense' | 'attack' | 'feed'>('defense');
+
+  const setupInputRef = useRef<HTMLInputElement | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const s = localStorage.getItem('word-war-auth');
@@ -124,29 +127,25 @@ export default function App() {
   }, [auth]);
 
   useEffect(() => { if (!toast) return; const t = window.setTimeout(() => setToast(null), 2600); return () => window.clearTimeout(t); }, [toast]);
-  useEffect(() => { if (tab === 'chat') setSeenChatCount(room?.chat.length ?? 0); }, [tab, room?.chat.length]);
-  useEffect(() => {
-    const focusedWord = words.find((w) => w.id === activeWordId) ?? words[0];
-    if (!setupInputFocused || room?.status !== 'setup' || !focusedWord?.placement) return;
-    const t = window.setTimeout(() => setupInputRef.current?.focus(), 40);
-    return () => window.clearTimeout(t);
-  }, [setupInputFocused, activeWordId, room?.status, words]);
   useEffect(() => { if (room?.status === 'battle') setTab('attack'); }, [room?.status]);
 
-  const setupInputRef = useRef<HTMLInputElement | null>(null);
+  // Auto-scroll chat to bottom on new messages
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    setSeenChatCount(room?.chat.length ?? 0);
+  }, [room?.chat.length]);
+
   const activeWord = words.find((w) => w.id === activeWordId) ?? words[0];
   const selectedCells = activeWord?.placement?.cells ?? [];
   const defenseLetters = useMemo(() => {
     const map: Record<number, string> = {};
     words.forEach((word) => {
       if (!word.placement) return;
-      word.placement.cells.forEach((cell, index) => {
-        const letter = word.value[index];
-        if (letter) map[cell] = letter;
-      });
+      word.placement.cells.forEach((cell, i) => { if (word.value[i]) map[cell] = word.value[i]; });
     });
     return map;
   }, [words]);
+
   const placementDone = words.every((w) => w.placement && w.value.length === w.length);
   const canSubmitSetup = placementDone && auth && room && room.status !== 'battle';
   const inBattle = room?.status === 'battle' || room?.status === 'finished';
@@ -155,9 +154,13 @@ export default function App() {
   const yourPlayer = room?.players.find((p) => p.id === auth?.playerId) ?? null;
   const enemyPlayer = room?.players.find((p) => p.id !== auth?.playerId) ?? null;
   const opponentGuessable = room?.opponentWords.filter((w) => !w.guessed) ?? [];
-  const unreadChatCount = Math.max(0, (room?.chat.length ?? 0) - seenChatCount);
+  const unreadChat = Math.max(0, (room?.chat.length ?? 0) - seenChatCount);
 
-  function persistAuth(next: Auth | null) { setAuth(next); if (next) localStorage.setItem('word-war-auth', JSON.stringify(next)); else localStorage.removeItem('word-war-auth'); }
+  function persistAuth(next: Auth | null) {
+    setAuth(next);
+    if (next) localStorage.setItem('word-war-auth', JSON.stringify(next));
+    else localStorage.removeItem('word-war-auth');
+  }
   function showToast(next: Toast) { setToast(next); }
 
   async function createRoom() {
@@ -184,36 +187,42 @@ export default function App() {
     if (!activeWord) return;
     setWords((cur) => cur.map((w) => w.id === activeWord.id ? { ...w, value: '', placement: undefined } : w));
     setHoverCells([]);
-    setSetupInputFocused(false);
   }
 
   function placeWord(row: number, col: number) {
     if (!activeWord || room?.status !== 'setup') return;
     const result = canPlaceWord(activeWord, row, col, orientation, words);
-    if (!result.valid) { showToast({ kind: 'error', text: 'Nije validno.' }); return; }
-    setWords((cur) => cur.map((w) => w.id === activeWord.id ? { ...w, placement: { row, col, orientation, cells: result.cells } } : w));
+    if (!result.valid) { showToast({ kind: 'error', text: 'Nije validno — preklapanje ili dodir.' }); return; }
+    setWords((cur) => cur.map((w) => w.id === activeWord.id
+      ? { ...w, placement: { row, col, orientation, cells: result.cells } } : w));
     setHoverCells(result.cells);
     setHoverValid(true);
-    setSetupInputFocused(true);
+    // Focus input after placing
+    setTimeout(() => setupInputRef.current?.focus(), 50);
   }
 
-  function onHover(index: number) { if (!activeWord) return; const { row, col } = fromIndex(index); const r = canPlaceWord(activeWord, row, col, orientation, words); setHoverCells(r.cells); setHoverValid(r.valid); }
-
-  function handleSetupInputChange(value: string) {
+  function handleSetupInput(value: string) {
     if (!activeWord) return;
     updateWord(activeWord.id, value);
     const normalized = normalizeWord(value).slice(0, activeWord.length);
     if (normalized.length === activeWord.length) {
+      // Auto-advance to next unplaced word
       const idx = words.findIndex((w) => w.id === activeWord.id);
       const next = words.slice(idx + 1).find((w) => !w.placement) ?? words.find((w) => !w.placement && w.id !== activeWord.id);
       if (next) {
         setActiveWordId(next.id);
-        setSetupInputFocused(false);
-        showToast({ kind: 'success', text: `Riječ od ${activeWord.length} slova spremljena.` });
+        showToast({ kind: 'success', text: `✓ ${activeWord.length} slova — odaberi sljedeće polje` });
       } else {
-        showToast({ kind: 'success', text: 'Sve riječi su postavljene.' });
+        showToast({ kind: 'success', text: 'Sve riječi postavljene!' });
       }
     }
+  }
+
+  function onHover(index: number) {
+    if (!activeWord) return;
+    const { row, col } = fromIndex(index);
+    const r = canPlaceWord(activeWord, row, col, orientation, words);
+    setHoverCells(r.cells); setHoverValid(r.valid);
   }
 
   async function submitSetup() {
@@ -242,12 +251,10 @@ export default function App() {
 
   async function sendChat() {
     if (!auth || !chatInput.trim()) return;
-    try {
-      await api(`/api/rooms/${auth.roomCode}/chat`, { method: 'POST', body: JSON.stringify({ playerId: auth.playerId, token: auth.token, text: chatInput.trim() }) });
-      setChatInput('');
-    } catch (e) {
-      showToast({ kind: 'error', text: e instanceof Error ? e.message : 'Chat greška.' });
-    }
+    const text = chatInput.trim();
+    setChatInput('');
+    try { await api(`/api/rooms/${auth.roomCode}/chat`, { method: 'POST', body: JSON.stringify({ playerId: auth.playerId, token: auth.token, text }) }); }
+    catch (e) { showToast({ kind: 'error', text: e instanceof Error ? e.message : 'Chat greška.' }); }
   }
 
   async function restartMatch() {
@@ -258,7 +265,11 @@ export default function App() {
     finally { setBusy(false); }
   }
 
-  function leaveRoom() { persistAuth(null); setRoom(null); setWords(initialWords()); setGuessText(''); setChatInput(''); setJoinCode(''); setHoverCells([]); setHoverValid(true); setTab('defense'); setSeenChatCount(0); }
+  function leaveRoom() {
+    persistAuth(null); setRoom(null); setWords(initialWords());
+    setGuessText(''); setChatInput(''); setJoinCode('');
+    setHoverCells([]); setHoverValid(true); setTab('defense'); setSeenChatCount(0);
+  }
 
   // ── LOBBY ──────────────────────────────────────────────────────────────────
   if (!auth || !room) return (
@@ -300,6 +311,7 @@ export default function App() {
     room.status === 'battle' ? (isYourTurn ? '⚡ Tvoj potez!' : `${enemyName} na potezu…`) :
     room.winnerId === auth.playerId ? '🏆 Pobjeda!' : '💀 Poraz';
 
+  // ── GAME LAYOUT ────────────────────────────────────────────────────────────
   return (
     <div className="shell game-shell">
       <div className="orb orb-a" /><div className="orb orb-b" />
@@ -324,274 +336,266 @@ export default function App() {
         </div>
       </header>
 
-      {/* TABS */}
-      <nav className="gtabs">
-        <button className={`gtab ${tab === 'defense' ? 'gtab-on' : ''}`} onClick={() => setTab('defense')}>
-          <Shield size={14} /> Obrana
-          {words.filter((w) => w.placement).length < 4 && room.status === 'setup' && <span className="tbadge tbadge-warn" />}
-        </button>
-        <button className={`gtab ${tab === 'attack' ? 'gtab-on' : ''}`} onClick={() => setTab('attack')}>
-          <Zap size={14} /> Napad
-          {isYourTurn && room.status === 'battle' && <span className="tbadge tbadge-pulse" />}
-        </button>
-        <button className={`gtab ${tab === 'feed' ? 'gtab-on' : ''}`} onClick={() => setTab('feed')}>
-          <Crown size={14} /> Tijek
-        </button>
-        <button className={`gtab ${tab === 'chat' ? 'gtab-on' : ''}`} onClick={() => setTab('chat')}>
-          <Send size={14} /> Chat
-          {unreadChatCount > 0 && <span className="chat-pill">{unreadChatCount}</span>}
-        </button>
-      </nav>
+      {/* MAIN: tabs + content + chat */}
+      <div className="game-body">
 
-      {/* ── DEFENSE ── */}
-      {tab === 'defense' && (
-        <div className="tcontent">
-          <div className="def-layout">
-            {/* Word setup */}
-            <aside className="def-aside">
-              <div className="aside-title">
-                {4 - words.filter((w) => w.placement).length > 0
-                  ? `Postavi još ${4 - words.filter((w) => w.placement).length} ${4 - words.filter((w) => w.placement).length === 1 ? 'riječ' : 'riječi'}`
-                  : '✓ Sve postavljeno'}
-              </div>
+        {/* LEFT: tabs + tab content */}
+        <div className="game-main">
+          <nav className="gtabs">
+            <button className={`gtab ${tab === 'defense' ? 'gtab-on' : ''}`} onClick={() => setTab('defense')}>
+              <Shield size={14} /> Obrana
+              {words.filter((w) => w.placement).length < 4 && room.status === 'setup' && <span className="tbadge tbadge-warn" />}
+            </button>
+            <button className={`gtab ${tab === 'attack' ? 'gtab-on' : ''}`} onClick={() => setTab('attack')}>
+              <Zap size={14} /> Napad
+              {isYourTurn && room.status === 'battle' && <span className="tbadge tbadge-pulse" />}
+            </button>
+            <button className={`gtab ${tab === 'feed' ? 'gtab-on' : ''}`} onClick={() => setTab('feed')}>
+              <Crown size={14} /> Tijek
+            </button>
+          </nav>
 
-              <div className="setup-card">
-                <div className="setup-label">Aktivna riječ</div>
-                <div className="wslots wslots-compact">
-                  {words.map((word) => (
-                    <button key={word.id} className={`wslot ${activeWordId === word.id ? 'wslot-active' : ''} ${word.placement ? 'wslot-placed' : ''}`} onClick={() => setActiveWordId(word.id)} disabled={inBattle}>
-                      <div className="wslot-head">
-                        <span>{word.length} slova</span>
-                        {word.placement ? <CheckCircle2 size={13} style={{ color: 'var(--green)' }} /> : <XCircle size={13} style={{ color: 'var(--muted)' }} />}
-                      </div>
-                      <div className="setup-preview">
-                        {Array.from({ length: word.length }, (_, i) => (
-                          <span key={i} className={`setup-chip ${word.value[i] ? 'setup-chip-filled' : ''}`}>{word.value[i] ?? '•'}</span>
-                        ))}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="orient-row">
-                <button className={`obtn ${orientation === 'horizontal' ? 'obtn-on' : ''}`} onClick={() => setOrientation('horizontal')} disabled={inBattle}>↔ Horiz.</button>
-                <button className={`obtn ${orientation === 'vertical' ? 'obtn-on' : ''}`} onClick={() => setOrientation('vertical')} disabled={inBattle}>↕ Vert.</button>
-              </div>
-
-              <div className="setup-card">
-                <div className="setup-label">Pisanje direktno na grid</div>
-                <p className="aside-hint">1. Odaberi riječ. 2. Dodirni početno polje. 3. Tipkaj. Smjer se pamti dok ga ne promijeniš.</p>
-                <div className="setup-live">
-                  <div className="setup-live-meta">
-                    <span>{activeWord.length} slova</span>
-                    <span>{activeWord.placement ? `${LETTERS[activeWord.placement.col]}${activeWord.placement.row + 1} · ${activeWord.placement.orientation === 'horizontal' ? 'vodoravno' : 'okomito'}` : 'odaberi polje'}</span>
+          {/* ── DEFENSE ── */}
+          {tab === 'defense' && (
+            <div className="tcontent">
+              <div className="def-layout">
+                <aside className="def-aside">
+                  <div className="aside-title">
+                    {words.filter((w) => w.placement && w.value.length === w.length).length < 4
+                      ? `Postavi ${4 - words.filter((w) => w.placement && w.value.length === w.length).length} ${4 - words.filter((w) => w.placement && w.value.length === w.length).length === 1 ? 'riječ' : 'riječi'}`
+                      : '✓ Sve postavljeno'}
                   </div>
-                  <input
-                    ref={setupInputRef}
-                    className="big-input setup-type-input"
-                    placeholder={activeWord.placement ? `Upiši ${activeWord.length} slova…` : 'Prvo dotakni grid'}
-                    value={activeWord.value}
-                    onChange={(e) => handleSetupInputChange(e.target.value)}
-                    onFocus={() => setSetupInputFocused(true)}
-                    onBlur={() => setSetupInputFocused(false)}
-                    maxLength={activeWord.length}
-                    disabled={inBattle || !activeWord.placement}
-                    autoCapitalize="characters"
-                    autoCorrect="off"
-                    spellCheck={false}
-                  />
-                  <div className="setup-preview setup-preview-live">
-                    {Array.from({ length: activeWord.length }, (_, i) => (
-                      <span key={i} className={`setup-chip ${activeWord.value[i] ? 'setup-chip-filled' : ''} ${selectedCells.includes(activeWord.placement?.cells?.[i] ?? -1) ? 'setup-chip-active' : ''}`}>{activeWord.value[i] ?? '•'}</span>
+
+                  {/* Word selector pills */}
+                  <div className="word-pills">
+                    {words.map((word) => (
+                      <button
+                        key={word.id}
+                        className={`word-pill ${activeWordId === word.id ? 'word-pill-active' : ''} ${word.placement && word.value.length === word.length ? 'word-pill-done' : ''}`}
+                        onClick={() => { setActiveWordId(word.id); setHoverCells([]); }}
+                        disabled={inBattle}
+                      >
+                        {word.placement && word.value.length === word.length
+                          ? <CheckCircle2 size={12} />
+                          : <XCircle size={12} />}
+                        {word.length} slova
+                      </button>
                     ))}
                   </div>
-                </div>
-                <button className="btn-secondary" style={{ width: '100%', marginTop: 8 }} onClick={clearActiveWord} disabled={inBattle || (!activeWord.value && !activeWord.placement)}>
-                  Očisti aktivnu riječ
-                </button>
-              </div>
 
-              <button className="btn-primary" style={{ width: '100%', marginTop: 8 }} disabled={!canSubmitSetup || busy} onClick={submitSetup}>
-                {busy ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />} Zaključaj
-              </button>
-              {room.status === 'finished' && (
-                <button className="btn-secondary" style={{ width: '100%', marginTop: 8 }} onClick={restartMatch} disabled={busy}>
-                  <RotateCw size={15} /> Nova runda
-                </button>
-              )}
-            </aside>
-
-            {/* Defense grid */}
-            <div className="grid-area">
-              <Grid mode="defense" cells={room.yourDefenseGrid}
-                hoverCells={room.status === 'setup' ? hoverCells : []} hoverValid={hoverValid}
-                selectedCells={room.status === 'setup' ? selectedCells : []}
-                letters={defenseLetters}
-                onCellEnter={room.status === 'setup' ? onHover : undefined}
-                onCellLeave={() => setHoverCells([])}
-                onCellClick={room.status === 'setup' ? (i) => placeWord(fromIndex(i).row, fromIndex(i).col) : undefined}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── ATTACK ── */}
-      {tab === 'attack' && (
-        <div className="tcontent">
-          <div className="atk-layout">
-            {/* Attack grid */}
-            <div className="grid-area">
-              <Grid mode="attack" cells={room.enemyGrid}
-                onCellClick={room.status === 'battle' && isYourTurn ? attackCell : undefined}
-              />
-            </div>
-
-            {/* Attack aside */}
-            <aside className="atk-aside">
-              <div className="aside-title">Protivnikove riječi</div>
-              <div className="opp-list">
-                {room.opponentWords.map((word) => (
-                  <div key={word.id} className={`opp-item ${word.guessed ? 'opp-done' : ''}`}>
-                    <div className="opp-chips">
-                      {word.revealed.map((ch, i) => (
-                        <span key={i} className={`mchip ${ch !== '_' ? 'mchip-hit' : ''}`}>{ch === '_' ? '?' : ch}</span>
-                      ))}
+                  {/* Active word input — shown after cell click */}
+                  <div className="active-word-box">
+                    <div className="active-word-meta">
+                      <span className="active-word-label">
+                        {activeWord.placement
+                          ? `${LETTERS[activeWord.placement.col]}${activeWord.placement.row + 1} · ${activeWord.placement.orientation === 'horizontal' ? '→' : '↓'}`
+                          : '↓ Klikni polje na gridu'}
+                      </span>
+                      <span className="active-word-len">{activeWord.value.length}/{activeWord.length}</span>
                     </div>
-                    {word.guessed && <span className="opp-tag">✓ Palo</span>}
-                  </div>
-                ))}
-              </div>
-
-              {inBattle && opponentGuessable.length > 0 && (
-                <>
-                  <div className="aside-title" style={{ marginTop: 12 }}>⚡ Pogodi cijelu riječ</div>
-                  <select className="big-input" value={guessTarget} onChange={(e) => setGuessTarget(e.target.value)} disabled={!isYourTurn}>
-                    {opponentGuessable.map((w) => (
-                      <option key={w.id} value={w.id}>{w.length} slova — {w.revealed.join('')}</option>
-                    ))}
-                  </select>
-                  <div className="guess-row">
                     <input
-                      className="big-input"
-                      value={guessText}
-                      onChange={(e) => setGuessText(normalizeWord(e.target.value).slice(0, opponentGuessable.find((w) => w.id === guessTarget)?.length ?? 4))}
-                      disabled={!isYourTurn}
-                      placeholder="Upiši riječ…"
+                      ref={setupInputRef}
+                      className={`word-input ${!activeWord.placement ? 'word-input-disabled' : ''}`}
+                      value={activeWord.value}
+                      onChange={(e) => handleSetupInput(e.target.value)}
+                      placeholder={activeWord.placement ? `Upiši ${activeWord.length} slova…` : 'Prvo klikni polje na gridu'}
+                      disabled={inBattle || !activeWord.placement}
+                      maxLength={activeWord.length}
                       autoCapitalize="characters"
                       autoCorrect="off"
+                      autoComplete="off"
                       spellCheck={false}
                     />
-                    <button className="btn-primary" style={{ padding: '0 14px', flexShrink: 0 }} onClick={submitGuess} disabled={!guessText || !isYourTurn || busy}>
-                      <Zap size={15} />
-                    </button>
-                  </div>
-                </>
-              )}
-
-              <div className="aside-title" style={{ marginTop: 12 }}>Tvoje riječi</div>
-              <div className="opp-list">
-                {room.yourWords.map((word) => (
-                  <div key={word.id} className={`opp-item ${word.guessed ? 'opp-lost' : ''}`}>
-                    <div className="opp-chips">
-                      {word.revealed.map((ch, i) => (
-                        <span key={i} className={`mchip ${ch !== '_' ? 'mchip-dmg' : ''}`}>{ch === '_' ? '·' : ch}</span>
+                    {/* Letter preview chips */}
+                    <div className="letter-chips">
+                      {Array.from({ length: activeWord.length }, (_, i) => (
+                        <span key={i} className={`lchip ${activeWord.value[i] ? 'lchip-filled' : ''}`}>
+                          {activeWord.value[i] ?? '·'}
+                        </span>
                       ))}
                     </div>
-                    {word.guessed && <span className="opp-tag opp-tag-red">✗ Pala</span>}
+                    <button className="clear-btn" onClick={clearActiveWord} disabled={inBattle || (!activeWord.value && !activeWord.placement)}>
+                      ✕ Očisti
+                    </button>
                   </div>
+
+                  <div className="orient-row">
+                    <button className={`obtn ${orientation === 'horizontal' ? 'obtn-on' : ''}`} onClick={() => setOrientation('horizontal')} disabled={inBattle}>↔ Vodoravno</button>
+                    <button className={`obtn ${orientation === 'vertical' ? 'obtn-on' : ''}`} onClick={() => setOrientation('vertical')} disabled={inBattle}>↕ Okomito</button>
+                  </div>
+
+                  <button className="btn-primary" style={{ width: '100%' }} disabled={!canSubmitSetup || busy} onClick={submitSetup}>
+                    {busy ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />} Zaključaj
+                  </button>
+                  {room.status === 'finished' && (
+                    <button className="btn-secondary" style={{ width: '100%', marginTop: 8 }} onClick={restartMatch} disabled={busy}>
+                      <RotateCw size={15} /> Nova runda
+                    </button>
+                  )}
+                </aside>
+
+                <div className="grid-area">
+                  <Grid
+                    mode="defense" cells={room.yourDefenseGrid}
+                    hoverCells={room.status === 'setup' ? hoverCells : []} hoverValid={hoverValid}
+                    selectedCells={room.status === 'setup' ? selectedCells : []}
+                    letters={defenseLetters}
+                    onCellEnter={room.status === 'setup' ? onHover : undefined}
+                    onCellLeave={() => setHoverCells([])}
+                    onCellClick={room.status === 'setup' ? (i) => placeWord(fromIndex(i).row, fromIndex(i).col) : undefined}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── ATTACK ── */}
+          {tab === 'attack' && (
+            <div className="tcontent">
+              <div className="atk-layout">
+                <div className="grid-area">
+                  <Grid mode="attack" cells={room.enemyGrid}
+                    onCellClick={room.status === 'battle' && isYourTurn ? attackCell : undefined}
+                  />
+                </div>
+                <aside className="atk-aside">
+                  <div className="aside-title">Protivnikove riječi</div>
+                  <div className="opp-list">
+                    {room.opponentWords.map((word) => (
+                      <div key={word.id} className={`opp-item ${word.guessed ? 'opp-done' : ''}`}>
+                        <div className="opp-chips">
+                          {word.revealed.map((ch, i) => (
+                            <span key={i} className={`mchip ${ch !== '_' ? 'mchip-hit' : ''}`}>{ch === '_' ? '?' : ch}</span>
+                          ))}
+                        </div>
+                        {word.guessed && <span className="opp-tag">✓ Palo</span>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {inBattle && opponentGuessable.length > 0 && (
+                    <>
+                      <div className="aside-title" style={{ marginTop: 12 }}>⚡ Pogodi cijelu riječ</div>
+                      <select className="big-input" value={guessTarget} onChange={(e) => setGuessTarget(e.target.value)} disabled={!isYourTurn}>
+                        {opponentGuessable.map((w) => (
+                          <option key={w.id} value={w.id}>{w.length} slova — {w.revealed.join('')}</option>
+                        ))}
+                      </select>
+                      <div className="guess-row">
+                        <input
+                          className="big-input"
+                          value={guessText}
+                          onChange={(e) => setGuessText(normalizeWord(e.target.value).slice(0, opponentGuessable.find((w) => w.id === guessTarget)?.length ?? 4))}
+                          disabled={!isYourTurn}
+                          placeholder="Upiši riječ…"
+                          autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+                          onKeyDown={(e) => e.key === 'Enter' && submitGuess()}
+                        />
+                        <button className="btn-primary" style={{ padding: '0 14px', flexShrink: 0 }} onClick={submitGuess} disabled={!guessText || !isYourTurn || busy}>
+                          <Zap size={15} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  <div className="aside-title" style={{ marginTop: 12 }}>Tvoje riječi</div>
+                  <div className="opp-list">
+                    {room.yourWords.map((word) => (
+                      <div key={word.id} className={`opp-item ${word.guessed ? 'opp-lost' : ''}`}>
+                        <div className="opp-chips">
+                          {word.revealed.map((ch, i) => (
+                            <span key={i} className={`mchip ${ch !== '_' ? 'mchip-dmg' : ''}`}>{ch === '_' ? '·' : ch}</span>
+                          ))}
+                        </div>
+                        {word.guessed && <span className="opp-tag opp-tag-red">✗ Pala</span>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {room.status === 'finished' && (
+                    <button className="btn-primary" style={{ width: '100%', marginTop: 12 }} onClick={restartMatch} disabled={busy}>
+                      <RotateCw size={15} /> Nova runda
+                    </button>
+                  )}
+                </aside>
+              </div>
+            </div>
+          )}
+
+          {/* ── FEED ── */}
+          {tab === 'feed' && (
+            <div className="tcontent feed-content">
+              <div className="fstats">
+                {[
+                  { val: `${room.opponentWords.filter((w) => w.guessed).length}/4`, label: 'Protivnik pale' },
+                  { val: `${room.yourWords.filter((w) => w.guessed).length}/4`, label: 'Tvoje pale' },
+                  { val: yourPlayer?.moves ?? 0, label: 'Tvojih poteza' },
+                  { val: enemyPlayer?.moves ?? 0, label: 'Poteza prot.' },
+                ].map((s) => (
+                  <div key={s.label} className="fstat"><div className="fstat-v">{s.val}</div><div className="fstat-l">{s.label}</div></div>
                 ))}
               </div>
-
-              {room.status === 'finished' && (
-                <button className="btn-primary" style={{ width: '100%', marginTop: 12 }} onClick={restartMatch} disabled={busy}>
-                  <RotateCw size={15} /> Nova runda
-                </button>
-              )}
-            </aside>
-          </div>
-        </div>
-      )}
-
-      {/* ── FEED ── */}
-      {tab === 'feed' && (
-        <div className="tcontent feed-content">
-          <div className="fstats">
-            {[
-              { val: `${room.opponentWords.filter((w) => w.guessed).length}/4`, label: 'Protivnik pale' },
-              { val: `${room.yourWords.filter((w) => w.guessed).length}/4`, label: 'Tvoje pale' },
-              { val: yourPlayer?.moves ?? 0, label: 'Tvojih poteza' },
-              { val: enemyPlayer?.moves ?? 0, label: 'Poteza prot.' },
-            ].map((s) => (
-              <div key={s.label} className="fstat"><div className="fstat-v">{s.val}</div><div className="fstat-l">{s.label}</div></div>
-            ))}
-          </div>
-          <div className="fmessages">
-            {[...room.messages].reverse().map((msg) => (
-              <div key={msg.id} className={`fmsg fmsg-${msg.kind}`}><span className="fdot" /><span>{msg.text}</span></div>
-            ))}
-            {room.messages.length === 0 && <div className="fempty">Tijek meča je prazan.</div>}
-          </div>
-        </div>
-      )}
-
-      {tab === 'chat' && (
-        <div className="tcontent chat-shell">
-          <div className="chat-board">
-            <div className="chat-header-card">
-              <div>
-                <div className="aside-title">Soba chat</div>
-                <div className="chat-subtitle">Kratke poruke između igrača dok traje meč.</div>
+              <div className="fmessages">
+                {[...room.messages].reverse().map((msg) => (
+                  <div key={msg.id} className={`fmsg fmsg-${msg.kind}`}><span className="fdot" /><span>{msg.text}</span></div>
+                ))}
+                {room.messages.length === 0 && <div className="fempty">Tijek meča je prazan.</div>}
               </div>
-              <div className="chat-room-pill">#{auth.roomCode}</div>
             </div>
-            <div className="chat-messages">
-              {room.chat.length > 0 ? room.chat.map((msg) => {
-                const mine = msg.playerId === auth.playerId;
-                return (
-                  <div key={msg.id} className={`chat-bubble ${mine ? 'chat-bubble-mine' : ''}`}>
-                    <div className="chat-bubble-head">
-                      <span>{mine ? 'Ti' : msg.playerName}</span>
-                      <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    </div>
-                    <div>{msg.text}</div>
-                  </div>
-                );
-              }) : <div className="fempty">Chat je prazan. Pošalji prvu poruku.</div>}
-            </div>
-            <div className="chat-compose">
-              <input
-                className="big-input"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value.slice(0, 180))}
-                onKeyDown={(e) => { if (e.key === 'Enter') sendChat(); }}
-                placeholder="Upiši poruku..."
-                maxLength={180}
-              />
-              <button className="btn-primary" onClick={sendChat} disabled={!chatInput.trim()}>
-                <Send size={15} /> Pošalji
-              </button>
-            </div>
-          </div>
+          )}
         </div>
-      )}
 
+        {/* RIGHT: persistent chat panel */}
+        <aside className="chat-panel">
+          <div className="chat-panel-head">
+            <MessageSquare size={14} />
+            <span>Chat</span>
+            <span className="chat-room-code">#{auth.roomCode}</span>
+            {unreadChat > 0 && <span className="chat-unread">{unreadChat}</span>}
+          </div>
+          <div className="chat-messages">
+            {room.chat.length === 0 && <div className="chat-empty">Nema poruka. Reci nešto!</div>}
+            {room.chat.map((msg) => {
+              const mine = msg.playerId === auth.playerId;
+              return (
+                <div key={msg.id} className={`chat-msg ${mine ? 'chat-msg-mine' : ''}`}>
+                  <div className="chat-msg-head">
+                    <span className="chat-msg-name">{mine ? 'Ti' : msg.playerName}</span>
+                    <span className="chat-msg-time">{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  </div>
+                  <div className="chat-msg-text">{msg.text}</div>
+                </div>
+              );
+            })}
+            <div ref={chatEndRef} />
+          </div>
+          <div className="chat-compose">
+            <input
+              ref={chatInputRef}
+              className="chat-input"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value.slice(0, 180))}
+              onKeyDown={(e) => { if (e.key === 'Enter') sendChat(); }}
+              placeholder="Poruka…"
+              maxLength={180}
+            />
+            <button className="chat-send" onClick={sendChat} disabled={!chatInput.trim()}>
+              <Send size={14} />
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      {/* Victory overlay */}
       {room.status === 'finished' && (
         <div className="victory-overlay">
           <div className="victory-card">
             <div className="victory-kicker">Runda završena</div>
-            <div className="victory-title">{room.winnerId === auth.playerId ? 'Pobijedio si' : 'Protivnik je pobijedio'}</div>
-            <div className="victory-scoreline">
-              <div className="victory-player">
-                <span>{yourPlayer?.name ?? 'Ti'}</span>
-                <strong>{yourPlayer?.score ?? 0}</strong>
-              </div>
-              <div className="victory-vs">VS</div>
-              <div className="victory-player">
-                <span>{enemyPlayer?.name ?? 'Protivnik'}</span>
-                <strong>{enemyPlayer?.score ?? 0}</strong>
-              </div>
+            <div className="victory-title">{room.winnerId === auth.playerId ? '🏆 Pobijedio si!' : '💀 Protivnik pobijedio'}</div>
+            <div className="victory-scores">
+              <div className="vscore"><span>{yourPlayer?.name ?? 'Ti'}</span><strong>{yourPlayer?.score ?? 0}</strong></div>
+              <div className="vscore-vs">VS</div>
+              <div className="vscore"><span>{enemyPlayer?.name ?? 'Protivnik'}</span><strong>{enemyPlayer?.score ?? 0}</strong></div>
             </div>
             <button className="btn-primary" onClick={restartMatch} disabled={busy}>
               <RotateCw size={15} /> Nova runda
@@ -633,9 +637,11 @@ function Grid({ mode, cells, hoverCells = [], hoverValid = true, selectedCells =
               const i = toIndex(row, col);
               const cell = cells[i];
               const hov = hoverCells.includes(i);
+              const sel = selectedCells.includes(i);
               let cls = `gc gc-${cell}`;
               if (hov) cls += hoverValid ? ' gc-hov-ok' : ' gc-hov-no';
-              if (selectedCells.includes(i)) cls += ' gc-selected';
+              if (sel) cls += ' gc-selected';
+              const letter = mode === 'defense' && letters[i];
               return (
                 <button key={i} className={cls}
                   onClick={() => onCellClick?.(i)}
@@ -643,7 +649,7 @@ function Grid({ mode, cells, hoverCells = [], hoverValid = true, selectedCells =
                   onMouseLeave={() => onCellLeave?.()}
                   disabled={!onCellClick} aria-label={`${mode}-${i}`}
                 >
-                  {cell === 'hit' || cell === 'secured' ? '✦' : cell === 'miss' ? '·' : mode === 'defense' && letters[i] ? letters[i] : cell === 'occupied' && mode === 'defense' ? '▪' : ''}
+                  {letter ? letter : cell === 'hit' || cell === 'secured' ? '✦' : cell === 'miss' ? '·' : cell === 'occupied' && mode === 'defense' ? '▪' : ''}
                 </button>
               );
             })}
