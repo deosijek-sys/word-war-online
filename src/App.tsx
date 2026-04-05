@@ -96,7 +96,8 @@ export default function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [seenChatCount, setSeenChatCount] = useState(0);
-  const [tab, setTab] = useState<'defense' | 'attack' | 'feed' | 'chat'>('defense');
+  const [tab, setTab] = useState<'defense' | 'attack' | 'feed'>('defense');
+  const [chatOpen, setChatOpen] = useState(true);
 
   useEffect(() => {
     const s = localStorage.getItem('word-war-auth');
@@ -124,7 +125,7 @@ export default function App() {
   }, [auth]);
 
   useEffect(() => { if (!toast) return; const t = window.setTimeout(() => setToast(null), 2600); return () => window.clearTimeout(t); }, [toast]);
-  useEffect(() => { if (tab === 'chat') setSeenChatCount(room?.chat.length ?? 0); }, [tab, room?.chat.length]);
+  useEffect(() => { if (chatOpen) setSeenChatCount(room?.chat.length ?? 0); }, [chatOpen, room?.chat.length]);
   useEffect(() => {
     const focusedWord = words.find((w) => w.id === activeWordId) ?? words[0];
     if (!setupInputFocused || room?.status !== 'setup' || !focusedWord?.placement) return;
@@ -337,10 +338,6 @@ export default function App() {
         <button className={`gtab ${tab === 'feed' ? 'gtab-on' : ''}`} onClick={() => setTab('feed')}>
           <Crown size={14} /> Tijek
         </button>
-        <button className={`gtab ${tab === 'chat' ? 'gtab-on' : ''}`} onClick={() => setTab('chat')}>
-          <Send size={14} /> Chat
-          {unreadChatCount > 0 && <span className="chat-pill">{unreadChatCount}</span>}
-        </button>
       </nav>
 
       {/* ── DEFENSE ── */}
@@ -536,46 +533,17 @@ export default function App() {
         </div>
       )}
 
-      {tab === 'chat' && (
-        <div className="tcontent chat-shell">
-          <div className="chat-board">
-            <div className="chat-header-card">
-              <div>
-                <div className="aside-title">Soba chat</div>
-                <div className="chat-subtitle">Kratke poruke između igrača dok traje meč.</div>
-              </div>
-              <div className="chat-room-pill">#{auth.roomCode}</div>
-            </div>
-            <div className="chat-messages">
-              {room.chat.length > 0 ? room.chat.map((msg) => {
-                const mine = msg.playerId === auth.playerId;
-                return (
-                  <div key={msg.id} className={`chat-bubble ${mine ? 'chat-bubble-mine' : ''}`}>
-                    <div className="chat-bubble-head">
-                      <span>{mine ? 'Ti' : msg.playerName}</span>
-                      <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    </div>
-                    <div>{msg.text}</div>
-                  </div>
-                );
-              }) : <div className="fempty">Chat je prazan. Pošalji prvu poruku.</div>}
-            </div>
-            <div className="chat-compose">
-              <input
-                className="big-input"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value.slice(0, 180))}
-                onKeyDown={(e) => { if (e.key === 'Enter') sendChat(); }}
-                placeholder="Upiši poruku..."
-                maxLength={180}
-              />
-              <button className="btn-primary" onClick={sendChat} disabled={!chatInput.trim()}>
-                <Send size={15} /> Pošalji
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <RoomChat
+        roomCode={auth.roomCode}
+        chat={room.chat}
+        playerId={auth.playerId}
+        chatInput={chatInput}
+        setChatInput={setChatInput}
+        sendChat={sendChat}
+        unreadChatCount={unreadChatCount}
+        open={chatOpen}
+        setOpen={setChatOpen}
+      />
 
       {room.status === 'finished' && (
         <div className="victory-overlay">
@@ -602,6 +570,77 @@ export default function App() {
 
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
     </div>
+  );
+}
+
+
+
+type RoomChatProps = {
+  roomCode: string;
+  chat: ChatMessage[];
+  playerId: string;
+  chatInput: string;
+  setChatInput: React.Dispatch<React.SetStateAction<string>>;
+  sendChat: () => void;
+  unreadChatCount: number;
+  open: boolean;
+  setOpen: React.Dispatch<React.SetStateAction<boolean>>;
+};
+
+function RoomChat({ roomCode, chat, playerId, chatInput, setChatInput, sendChat, unreadChatCount, open, setOpen }: RoomChatProps) {
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const node = messagesRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [chat, open]);
+
+  return (
+    <aside className={`room-chat ${open ? 'room-chat-open' : 'room-chat-closed'}`}>
+      <button className="room-chat-toggle" onClick={() => setOpen((v) => !v)} aria-label="Toggle chat">
+        <div className="room-chat-toggle-main">
+          <Send size={15} />
+          <span>Chat</span>
+        </div>
+        <div className="room-chat-toggle-meta">
+          <span className="chat-room-pill">#{roomCode}</span>
+          {unreadChatCount > 0 && <span className="chat-pill">{unreadChatCount}</span>}
+        </div>
+      </button>
+
+      {open && (
+        <>
+          <div ref={messagesRef} className="room-chat-messages">
+            {chat.length > 0 ? chat.map((msg) => {
+              const mine = msg.playerId === playerId;
+              return (
+                <div key={msg.id} className={`chat-bubble ${mine ? 'chat-bubble-mine' : ''}`}>
+                  <div className="chat-bubble-head">
+                    <span>{mine ? 'Ti' : msg.playerName}</span>
+                    <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  </div>
+                  <div>{msg.text}</div>
+                </div>
+              );
+            }) : <div className="fempty">Chat je prazan. Pošalji prvu poruku.</div>}
+          </div>
+          <div className="room-chat-compose">
+            <input
+              className="big-input room-chat-input"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value.slice(0, 180))}
+              onKeyDown={(e) => { if (e.key === 'Enter') sendChat(); }}
+              placeholder="Upiši poruku..."
+              maxLength={180}
+            />
+            <button className="btn-primary room-chat-send" onClick={sendChat} disabled={!chatInput.trim()}>
+              <Send size={15} />
+            </button>
+          </div>
+        </>
+      )}
+    </aside>
   );
 }
 
@@ -640,7 +679,9 @@ function Grid({ mode, cells, hoverCells = [], hoverValid = true, selectedCells =
                 <button key={i} className={cls}
                   onClick={() => onCellClick?.(i)}
                   onMouseEnter={() => onCellEnter?.(i)}
+                  onTouchStart={() => onCellEnter?.(i)}
                   onMouseLeave={() => onCellLeave?.()}
+                  onTouchEnd={() => onCellLeave?.()}
                   disabled={!onCellClick} aria-label={`${mode}-${i}`}
                 >
                   {cell === 'hit' || cell === 'secured' ? '✦' : cell === 'miss' ? '·' : mode === 'defense' && letters[i] ? letters[i] : cell === 'occupied' && mode === 'defense' ? '▪' : ''}
