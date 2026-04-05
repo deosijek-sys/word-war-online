@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "server": "node dist-server/server/index.js",
-    "build": "vite build && tsc -p tsconfig.server.json",
+    "server": "tsx server/index.ts",
+    "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
@@ -31,8 +31,5 @@
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2"
-  },
-  "engines": {
-    "node": ">=20"
   }
 }
