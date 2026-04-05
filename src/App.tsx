@@ -646,7 +646,8 @@ function Grid({ mode, cells, hoverCells = [], hoverValid = true, selectedCells =
                   onClick={() => onCellClick?.(i)}
                   onMouseEnter={() => onCellEnter?.(i)}
                   onMouseLeave={() => onCellLeave?.()}
-                  disabled={!onCellClick} aria-label={`${mode}-${i}`}
+                  style={!onCellClick ? { cursor: 'default' } : undefined}
+                  aria-label={`${mode}-${i}`}
                 >
                   {letter ? letter : cell === 'hit' || cell === 'secured' ? '✦' : cell === 'miss' ? '·' : cell === 'occupied' && mode === 'defense' ? '▪' : ''}
                 </button>
